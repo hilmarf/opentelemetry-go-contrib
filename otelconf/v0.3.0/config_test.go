@@ -4,7 +4,6 @@
 package otelconf
 
 import (
-	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -14,7 +13,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
 	lognoop "go.opentelemetry.io/otel/log/noop"
 	metricnoop "go.opentelemetry.io/otel/metric/noop"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
@@ -42,7 +40,7 @@ func TestNewSDK(t *testing.T) {
 		{
 			name: "with-configuration",
 			cfg: []ConfigurationOption{
-				WithContext(context.Background()),
+				WithContext(t.Context()),
 				WithOpenTelemetryConfiguration(OpenTelemetryConfiguration{
 					TracerProvider: &TracerProvider{},
 					MeterProvider:  &MeterProvider{},
@@ -56,7 +54,7 @@ func TestNewSDK(t *testing.T) {
 		{
 			name: "with-sdk-disabled",
 			cfg: []ConfigurationOption{
-				WithContext(context.Background()),
+				WithContext(t.Context()),
 				WithOpenTelemetryConfiguration(OpenTelemetryConfiguration{
 					Disabled:       ptr(true),
 					TracerProvider: &TracerProvider{},
@@ -75,7 +73,7 @@ func TestNewSDK(t *testing.T) {
 		assert.IsType(t, tt.wantTracerProvider, sdk.TracerProvider())
 		assert.IsType(t, tt.wantMeterProvider, sdk.MeterProvider())
 		assert.IsType(t, tt.wantLoggerProvider, sdk.LoggerProvider())
-		require.Equal(t, tt.wantShutdownErr, sdk.Shutdown(context.Background()))
+		require.Equal(t, tt.wantShutdownErr, sdk.Shutdown(t.Context()))
 	}
 }
 
@@ -88,17 +86,17 @@ var v03OpenTelemetryConfig = OpenTelemetryConfiguration{
 	},
 	Instrumentation: &Instrumentation{
 		Cpp: LanguageSpecificInstrumentation{
-			"example": map[string]interface{}{
+			"example": map[string]any{
 				"property": "value",
 			},
 		},
 		Dotnet: LanguageSpecificInstrumentation{
-			"example": map[string]interface{}{
+			"example": map[string]any{
 				"property": "value",
 			},
 		},
 		Erlang: LanguageSpecificInstrumentation{
-			"example": map[string]interface{}{
+			"example": map[string]any{
 				"property": "value",
 			},
 		},
@@ -121,42 +119,42 @@ var v03OpenTelemetryConfig = OpenTelemetryConfiguration{
 			},
 		},
 		Go: LanguageSpecificInstrumentation{
-			"example": map[string]interface{}{
+			"example": map[string]any{
 				"property": "value",
 			},
 		},
 		Java: LanguageSpecificInstrumentation{
-			"example": map[string]interface{}{
+			"example": map[string]any{
 				"property": "value",
 			},
 		},
 		Js: LanguageSpecificInstrumentation{
-			"example": map[string]interface{}{
+			"example": map[string]any{
 				"property": "value",
 			},
 		},
 		Php: LanguageSpecificInstrumentation{
-			"example": map[string]interface{}{
+			"example": map[string]any{
 				"property": "value",
 			},
 		},
 		Python: LanguageSpecificInstrumentation{
-			"example": map[string]interface{}{
+			"example": map[string]any{
 				"property": "value",
 			},
 		},
 		Ruby: LanguageSpecificInstrumentation{
-			"example": map[string]interface{}{
+			"example": map[string]any{
 				"property": "value",
 			},
 		},
 		Rust: LanguageSpecificInstrumentation{
-			"example": map[string]interface{}{
+			"example": map[string]any{
 				"property": "value",
 			},
 		},
 		Swift: LanguageSpecificInstrumentation{
-			"example": map[string]interface{}{
+			"example": map[string]any{
 				"property": "value",
 			},
 		},
@@ -294,10 +292,10 @@ var v03OpenTelemetryConfig = OpenTelemetryConfiguration{
 			{Name: "bool_key", Type: &AttributeNameValueType{Value: "bool"}, Value: true},
 			{Name: "int_key", Type: &AttributeNameValueType{Value: "int"}, Value: 1},
 			{Name: "double_key", Type: &AttributeNameValueType{Value: "double"}, Value: 1.1},
-			{Name: "string_array_key", Type: &AttributeNameValueType{Value: "string_array"}, Value: []interface{}{"value1", "value2"}},
-			{Name: "bool_array_key", Type: &AttributeNameValueType{Value: "bool_array"}, Value: []interface{}{true, false}},
-			{Name: "int_array_key", Type: &AttributeNameValueType{Value: "int_array"}, Value: []interface{}{1, 2}},
-			{Name: "double_array_key", Type: &AttributeNameValueType{Value: "double_array"}, Value: []interface{}{1.1, 2.2}},
+			{Name: "string_array_key", Type: &AttributeNameValueType{Value: "string_array"}, Value: []any{"value1", "value2"}},
+			{Name: "bool_array_key", Type: &AttributeNameValueType{Value: "bool_array"}, Value: []any{true, false}},
+			{Name: "int_array_key", Type: &AttributeNameValueType{Value: "int_array"}, Value: []any{1, 2}},
+			{Name: "double_array_key", Type: &AttributeNameValueType{Value: "double_array"}, Value: []any{1.1, 2.2}},
 		},
 		AttributesList: ptr("service.namespace=my-namespace,service.version=1.0.0"),
 		Detectors: &Detectors{
@@ -389,7 +387,7 @@ func TestParseYAML(t *testing.T) {
 		name     string
 		input    string
 		wantErr  error
-		wantType interface{}
+		wantType any
 	}{
 		{
 			name:    "valid YAML config",
@@ -455,7 +453,7 @@ func TestSerializeJSON(t *testing.T) {
 		name     string
 		input    string
 		wantErr  error
-		wantType interface{}
+		wantType any
 	}{
 		{
 			name:    "valid JSON config",

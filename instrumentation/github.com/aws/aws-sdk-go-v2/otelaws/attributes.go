@@ -11,9 +11,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sns"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/aws/smithy-go/middleware"
-
 	"go.opentelemetry.io/otel/attribute"
-	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.37.0"
 )
 
 // AWS attributes.
@@ -52,14 +51,6 @@ func ServiceAttr(service string) attribute.KeyValue {
 // RequestIDAttr returns the AWS request ID attribute.
 func RequestIDAttr(requestID string) attribute.KeyValue {
 	return RequestIDKey.String(requestID)
-}
-
-// DefaultAttributeSetter checks to see if there are service specific attributes available to set for the AWS service.
-// If there are service specific attributes available then they will be included.
-//
-// Deprecated: Use DefaultAttributeBuilder instead. This will be removed in a future release.
-func DefaultAttributeSetter(ctx context.Context, in middleware.InitializeInput) []attribute.KeyValue {
-	return DefaultAttributeBuilder(ctx, in, middleware.InitializeOutput{})
 }
 
 // DefaultAttributeBuilder checks to see if there are service specific attributes available to set for the AWS service.

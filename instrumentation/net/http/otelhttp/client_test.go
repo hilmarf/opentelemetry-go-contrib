@@ -4,7 +4,6 @@
 package otelhttp_test
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -13,10 +12,10 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 func TestConvenienceWrappers(t *testing.T) {
@@ -33,14 +32,14 @@ func TestConvenienceWrappers(t *testing.T) {
 
 	content := []byte("Hello, world!")
 
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if _, err := w.Write(content); err != nil {
 			t.Fatal(err)
 		}
 	}))
 	defer ts.Close()
 
-	ctx := context.Background()
+	ctx := t.Context()
 	res, err := otelhttp.Get(ctx, ts.URL)
 	if err != nil {
 		t.Fatal(err)
@@ -80,11 +79,11 @@ func TestClientWithTraceContext(t *testing.T) {
 	provider := trace.NewTracerProvider(trace.WithSpanProcessor(sr))
 
 	tracer := provider.Tracer("")
-	ctx, span := tracer.Start(context.Background(), "http requests")
+	ctx, span := tracer.Start(t.Context(), "http requests")
 
 	content := []byte("Hello, world!")
 
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if _, err := w.Write(content); err != nil {
 			t.Fatal(err)
 		}

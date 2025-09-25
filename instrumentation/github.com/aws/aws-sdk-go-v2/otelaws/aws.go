@@ -1,6 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+// Package otelaws provides instrumentation for the AWS SDK.
 package otelaws // import "go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-sdk-go-v2/otelaws"
 
 import (
@@ -10,12 +11,11 @@ import (
 	v2Middleware "github.com/aws/aws-sdk-go-v2/aws/middleware"
 	"github.com/aws/smithy-go/middleware"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
-
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
-	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.37.0"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -26,11 +26,6 @@ const (
 
 type spanTimestampKey struct{}
 
-// AttributeSetter returns an array of KeyValue pairs, it can be used to set custom attributes.
-//
-// Deprecated: Use AttributeBuilder instead. This will be removed in a future release.
-type AttributeSetter func(context.Context, middleware.InitializeInput) []attribute.KeyValue
-
 // AttributeBuilder returns an array of KeyValue pairs, it can be used to set custom attributes.
 type AttributeBuilder func(ctx context.Context, in middleware.InitializeInput, out middleware.InitializeOutput) []attribute.KeyValue
 
@@ -40,7 +35,7 @@ type otelMiddlewares struct {
 	attributeBuilders []AttributeBuilder
 }
 
-func (m otelMiddlewares) initializeMiddlewareBefore(stack *middleware.Stack) error {
+func (otelMiddlewares) initializeMiddlewareBefore(stack *middleware.Stack) error {
 	return stack.Initialize.Add(middleware.InitializeMiddlewareFunc("OTelInitializeMiddlewareBefore", func(
 		ctx context.Context, in middleware.InitializeInput, next middleware.InitializeHandler) (
 		out middleware.InitializeOutput, metadata middleware.Metadata, err error,
@@ -103,7 +98,7 @@ func (m otelMiddlewares) finalizeMiddlewareAfter(stack *middleware.Stack) error 
 		middleware.After)
 }
 
-func (m otelMiddlewares) deserializeMiddleware(stack *middleware.Stack) error {
+func (otelMiddlewares) deserializeMiddleware(stack *middleware.Stack) error {
 	return stack.Deserialize.Add(middleware.DeserializeMiddlewareFunc("OTelDeserializeMiddleware", func(
 		ctx context.Context, in middleware.DeserializeInput, next middleware.DeserializeHandler) (
 		out middleware.DeserializeOutput, metadata middleware.Metadata, err error,
@@ -116,7 +111,7 @@ func (m otelMiddlewares) deserializeMiddleware(stack *middleware.Stack) error {
 		}
 
 		span := trace.SpanFromContext(ctx)
-		span.SetAttributes(semconv.HTTPStatusCode(resp.StatusCode))
+		span.SetAttributes(semconv.HTTPResponseStatusCode(resp.StatusCode))
 
 		requestID, ok := v2Middleware.GetRequestIDMetadata(metadata)
 		if ok {

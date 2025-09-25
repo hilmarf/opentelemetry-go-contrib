@@ -4,19 +4,25 @@
 package otelconf
 
 import (
+	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
@@ -26,7 +32,11 @@ import (
 	"go.opentelemetry.io/otel/metric/noop"
 	"go.opentelemetry.io/otel/sdk/instrumentation"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/resource"
+	v1 "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 )
 
 func TestMeterProvider(t *testing.T) {
@@ -87,8 +97,60 @@ func TestMeterProvider(t *testing.T) {
 		mp, shutdown, err := meterProvider(tt.cfg, resource.Default())
 		require.Equal(t, tt.wantProvider, mp)
 		assert.Equal(t, tt.wantErr, err)
-		require.NoError(t, shutdown(context.Background()))
+		require.NoError(t, shutdown(t.Context()))
 	}
+}
+
+func TestMeterProviderOptions(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		calls++
+	}))
+	defer srv.Close()
+
+	cfg := OpenTelemetryConfiguration{
+		MeterProvider: &MeterProvider{
+			Readers: []MetricReader{{
+				Periodic: &PeriodicMetricReader{
+					Exporter: PushMetricExporter{
+						OTLP: &OTLPMetric{
+							Protocol: ptr("http/protobuf"),
+							Endpoint: ptr(srv.URL),
+							Insecure: ptr(true),
+						},
+					},
+				},
+			}},
+		},
+	}
+
+	var buf bytes.Buffer
+	stdoutmetricExporter, err := stdoutmetric.New(stdoutmetric.WithWriter(&buf))
+	require.NoError(t, err)
+
+	res := resource.NewSchemaless(attribute.String("foo", "bar"))
+	sdk, err := NewSDK(
+		WithOpenTelemetryConfiguration(cfg),
+		WithMeterProviderOptions(sdkmetric.WithReader(sdkmetric.NewPeriodicReader(stdoutmetricExporter))),
+		WithMeterProviderOptions(sdkmetric.WithResource(res)),
+	)
+	require.NoError(t, err)
+	defer func() {
+		assert.NoError(t, sdk.Shutdown(t.Context()))
+		// The exporter, which we passed in as an extra option to NewSDK,
+		// should be wired up to the provider in addition to the
+		// configuration-based OTLP exporter.
+		assert.NotZero(t, buf)
+		assert.Equal(t, 1, calls) // flushed on shutdown
+
+		// Options provided by WithMeterProviderOptions may be overridden
+		// by configuration, e.g. the resource is always defined via
+		// configuration.
+		assert.NotContains(t, buf.String(), "foo")
+	}()
+
+	counter, _ := sdk.MeterProvider().Meter("test").Int64Counter("counter")
+	counter.Add(t.Context(), 1)
 }
 
 func TestReader(t *testing.T) {
@@ -96,7 +158,7 @@ func TestReader(t *testing.T) {
 		stdoutmetric.WithPrettyPrint(),
 	)
 	require.NoError(t, err)
-	ctx := context.Background()
+	ctx := t.Context()
 	otlpGRPCExporter, err := otlpmetricgrpc.New(ctx)
 	require.NoError(t, err)
 	otlpHTTPExporter, err := otlpmetrichttp.New(ctx)
@@ -800,7 +862,7 @@ func TestReader(t *testing.T) {
 	}
 	for _, tt := range testCases {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := metricReader(context.Background(), tt.reader)
+			got, err := metricReader(t.Context(), tt.reader)
 			if tt.wantErr != "" {
 				require.Error(t, err)
 				require.Equal(t, tt.wantErr, err.Error())
@@ -823,7 +885,7 @@ func TestReader(t *testing.T) {
 				wantExporterType := reflect.Indirect(reflect.ValueOf(tt.wantReader)).FieldByName(fieldName).Elem().Type()
 				gotExporterType := reflect.Indirect(reflect.ValueOf(got)).FieldByName(fieldName).Elem().Type()
 				require.Equal(t, wantExporterType.String(), gotExporterType.String())
-				require.NoError(t, got.Shutdown(context.Background()))
+				require.NoError(t, got.Shutdown(t.Context()))
 			}
 		})
 	}
@@ -1370,8 +1432,9 @@ func TestPrometheusIPv6(t *testing.T) {
 				WithResourceConstantLabels: &IncludeExclude{},
 			}
 
-			rs, err := prometheusReader(context.Background(), &cfg)
+			rs, err := prometheusReader(t.Context(), &cfg)
 			t.Cleanup(func() {
+				//nolint:usetesting // required to avoid getting a canceled context at cleanup.
 				require.NoError(t, rs.Shutdown(context.Background()))
 			})
 			require.NoError(t, err)
@@ -1387,4 +1450,185 @@ func TestPrometheusIPv6(t *testing.T) {
 			assert.Equal(t, http.StatusOK, resp.StatusCode)
 		})
 	}
+}
+
+func Test_otlpGRPCMetricExporter(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// TODO (#7446): Fix the flakiness on Windows.
+		t.Skip("Test is flaky on Windows.")
+	}
+	type args struct {
+		ctx        context.Context
+		otlpConfig *OTLPMetric
+	}
+	tests := []struct {
+		name           string
+		args           args
+		grpcServerOpts func() ([]grpc.ServerOption, error)
+	}{
+		{
+			name: "no TLS config",
+			args: args{
+				ctx: t.Context(),
+				otlpConfig: &OTLPMetric{
+					Protocol:    ptr("grpc"),
+					Compression: ptr("gzip"),
+					Timeout:     ptr(5000),
+					Insecure:    ptr(true),
+					Headers: []NameStringValuePair{
+						{Name: "test", Value: ptr("test1")},
+					},
+				},
+			},
+			grpcServerOpts: func() ([]grpc.ServerOption, error) {
+				return []grpc.ServerOption{}, nil
+			},
+		},
+		{
+			name: "with TLS config",
+			args: args{
+				ctx: t.Context(),
+				otlpConfig: &OTLPMetric{
+					Protocol:    ptr("grpc"),
+					Compression: ptr("gzip"),
+					Timeout:     ptr(5000),
+					Certificate: ptr("testdata/server-certs/server.crt"),
+					Headers: []NameStringValuePair{
+						{Name: "test", Value: ptr("test1")},
+					},
+				},
+			},
+			grpcServerOpts: func() ([]grpc.ServerOption, error) {
+				opts := []grpc.ServerOption{}
+				tlsCreds, err := credentials.NewServerTLSFromFile("testdata/server-certs/server.crt", "testdata/server-certs/server.key")
+				if err != nil {
+					return nil, err
+				}
+				opts = append(opts, grpc.Creds(tlsCreds))
+				return opts, nil
+			},
+		},
+		{
+			name: "with TLS config and client key",
+			args: args{
+				ctx: t.Context(),
+				otlpConfig: &OTLPMetric{
+					Protocol:          ptr("grpc"),
+					Compression:       ptr("gzip"),
+					Timeout:           ptr(5000),
+					Certificate:       ptr("testdata/server-certs/server.crt"),
+					ClientKey:         ptr("testdata/client-certs/client.key"),
+					ClientCertificate: ptr("testdata/client-certs/client.crt"),
+					Headers: []NameStringValuePair{
+						{Name: "test", Value: ptr("test1")},
+					},
+				},
+			},
+			grpcServerOpts: func() ([]grpc.ServerOption, error) {
+				opts := []grpc.ServerOption{}
+				cert, err := tls.LoadX509KeyPair("testdata/server-certs/server.crt", "testdata/server-certs/server.key")
+				if err != nil {
+					return nil, err
+				}
+				caCert, err := os.ReadFile("testdata/ca.crt")
+				if err != nil {
+					return nil, err
+				}
+				caCertPool := x509.NewCertPool()
+				caCertPool.AppendCertsFromPEM(caCert)
+				tlsCreds := credentials.NewTLS(&tls.Config{
+					Certificates: []tls.Certificate{cert},
+					ClientCAs:    caCertPool,
+					ClientAuth:   tls.RequireAndVerifyClientCert,
+				})
+				opts = append(opts, grpc.Creds(tlsCreds))
+				return opts, nil
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			n, err := net.Listen("tcp4", "localhost:0")
+			require.NoError(t, err)
+
+			// We need to manually construct the endpoint using the port on which the server is listening.
+			//
+			// n.Addr() always returns 127.0.0.1 instead of localhost.
+			// But our certificate is created with CN as 'localhost', not '127.0.0.1'.
+			// So we have to manually form the endpoint as "localhost:<port>".
+			_, port, err := net.SplitHostPort(n.Addr().String())
+			require.NoError(t, err)
+			tt.args.otlpConfig.Endpoint = ptr("localhost:" + port)
+
+			serverOpts, err := tt.grpcServerOpts()
+			require.NoError(t, err)
+
+			startGRPCMetricCollector(t, n, serverOpts)
+
+			exporter, err := otlpGRPCMetricExporter(tt.args.ctx, tt.args.otlpConfig)
+			require.NoError(t, err)
+
+			res, err := resource.New(t.Context())
+			require.NoError(t, err)
+
+			assert.EventuallyWithT(t, func(collect *assert.CollectT) {
+				assert.NoError(collect, exporter.Export(t.Context(), &metricdata.ResourceMetrics{
+					Resource: res,
+					ScopeMetrics: []metricdata.ScopeMetrics{
+						{
+							Metrics: []metricdata.Metrics{
+								{
+									Name: "test-metric",
+									Data: metricdata.Gauge[int64]{
+										DataPoints: []metricdata.DataPoint[int64]{
+											{
+												Value: 1,
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				}))
+			}, 10*time.Second, 1*time.Second)
+		})
+	}
+}
+
+// grpcMetricCollector is an OTLP gRPC server that collects all requests it receives.
+type grpcMetricCollector struct {
+	v1.UnimplementedMetricsServiceServer
+}
+
+var _ v1.MetricsServiceServer = (*grpcMetricCollector)(nil)
+
+// startGRPCMetricCollector returns a *grpcMetricCollector that is listening at the provided
+// endpoint.
+//
+// If endpoint is an empty string, the returned collector will be listening on
+// the localhost interface at an OS chosen port.
+func startGRPCMetricCollector(t *testing.T, listener net.Listener, serverOptions []grpc.ServerOption) {
+	srv := grpc.NewServer(serverOptions...)
+	c := &grpcMetricCollector{}
+
+	v1.RegisterMetricsServiceServer(srv, c)
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.Serve(listener) }()
+
+	t.Cleanup(func() {
+		srv.GracefulStop()
+		if err := <-errCh; err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+			assert.NoError(t, err)
+		}
+	})
+}
+
+// Export handles the export req.
+func (*grpcMetricCollector) Export(
+	_ context.Context,
+	_ *v1.ExportMetricsServiceRequest,
+) (*v1.ExportMetricsServiceResponse, error) {
+	return &v1.ExportMetricsServiceResponse{}, nil
 }
